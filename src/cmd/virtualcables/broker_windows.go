@@ -144,7 +144,7 @@ func acceptCableBroker(listener net.Listener, token string) {
 	count := deviceBroker.desired
 	deviceBroker.mu.Unlock()
 	guiManager.logger.Printf("One-time administrator broker connected")
-	syncCableDevices(count)
+	syncCableDevices(count, guiManager.ListenPort())
 }
 
 func requestCableSync() {
@@ -154,7 +154,7 @@ func requestCableSync() {
 	starting := deviceBroker.starting
 	deviceBroker.mu.Unlock()
 	if connected {
-		go syncCableDevices(cableCount)
+		go syncCableDevices(cableCount, guiManager.ListenPort())
 		return
 	}
 	if !starting {
@@ -162,7 +162,7 @@ func requestCableSync() {
 	}
 }
 
-func syncCableDevices(count int) {
+func syncCableDevices(count, port int) {
 	deviceBroker.commandMu.Lock()
 	defer deviceBroker.commandMu.Unlock()
 	deviceBroker.mu.Lock()
@@ -172,7 +172,7 @@ func syncCableDevices(count int) {
 		return
 	}
 	_ = conn.SetDeadline(time.Now().Add(45 * time.Second))
-	if _, err := fmt.Fprintf(conn, "SYNC %d\n", count); err != nil {
+	if _, err := fmt.Fprintf(conn, "SYNC %d %d\n", count, port); err != nil {
 		guiManager.logger.Printf("Could not send device synchronization request: %v", err)
 		_ = conn.Close()
 		clearBrokerConnection(conn)
@@ -232,7 +232,7 @@ func runAttachBroker(address, token string, logger *log.Logger) error {
 		if len(fields) == 1 && fields[0] == "QUIT" {
 			return nil
 		}
-		if len(fields) != 2 || fields[0] != "SYNC" {
+		if len(fields) != 3 || fields[0] != "SYNC" {
 			_, _ = fmt.Fprintln(conn, "ERR invalid request")
 			continue
 		}
@@ -241,7 +241,12 @@ func runAttachBroker(address, token string, logger *log.Logger) error {
 			_, _ = fmt.Fprintln(conn, "ERR invalid cable count")
 			continue
 		}
-		if err := runAttachHelper(count, logger); err != nil {
+		port, parseErr := strconv.Atoi(fields[2])
+		if parseErr != nil || port < 1 || port > 65535 {
+			_, _ = fmt.Fprintln(conn, "ERR invalid TCP port")
+			continue
+		}
+		if err := runAttachHelper(count, port, logger); err != nil {
 			logger.Printf("Broker synchronization failed: %v", err)
 			_, _ = fmt.Fprintln(conn, "ERR synchronization failed")
 			continue
