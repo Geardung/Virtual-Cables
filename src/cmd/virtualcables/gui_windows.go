@@ -410,7 +410,7 @@ func refreshList() {
 		setStatus("The window remains open. USB/IP server error: " + guiManager.LastError())
 		return
 	}
-	setStatus(fmt.Sprintf("%d cable(s) configured. USB/IP server is running.", cableCount))
+	setStatus(fmt.Sprintf("%d cable(s) configured. USB/IP server is running on %s.", cableCount, guiManager.Address()))
 }
 
 func addCable() {
@@ -435,7 +435,7 @@ func applyCount(n int) {
 		return
 	}
 	cableCount = n
-	if err := saveCableCount(n); err != nil {
+	if err := saveCableCount(n, guiManager.Preferred()); err != nil {
 		showError("The cable was changed, but CONFIG.ini could not be saved:\n" + err.Error())
 	}
 	refreshList()

@@ -7,7 +7,7 @@ import (
 	"log"
 )
 
-func runAttachHelper(count int, logger *log.Logger) error {
+func runAttachHelper(count, port int, logger *log.Logger) error {
 	return fmt.Errorf("USB/IP attachment is only supported on Windows")
 }
 

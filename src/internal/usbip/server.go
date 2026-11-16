@@ -41,6 +41,16 @@ func NewServer(address string, devices []*uac1.Device, logger *log.Logger) *Serv
 // Ready is closed after the TCP listener has been created successfully.
 func (s *Server) Ready() <-chan struct{} { return s.ready }
 
+// Addr returns the bound listener address once Serve has opened it.
+func (s *Server) Addr() net.Addr {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.listener == nil {
+		return nil
+	}
+	return s.listener.Addr()
+}
+
 func (s *Server) Serve(ctx context.Context) error {
 	ln, err := net.Listen("tcp", s.Address)
 	if err != nil {
