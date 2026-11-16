@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -27,10 +28,42 @@ type appServer struct {
 	done      chan error
 	count     int
 	address   string
+	bound     string
 	bufferMS  int
 	logger    *log.Logger
 	logPath   string
 	lastError string
+}
+
+// listenCandidates returns the preferred address followed by fallback
+// addresses to try when the preferred port cannot be bound (for example when
+// another USB/IP stack such as usbipd holds the default port 3240).
+func listenCandidates(preferred string) []string {
+	candidates := []string{preferred}
+	seen := map[string]bool{preferred: true}
+	for port := 3241; port <= 3259; port++ {
+		addr := fmt.Sprintf("127.0.0.1:%d", port)
+		if !seen[addr] {
+			seen[addr] = true
+			candidates = append(candidates, addr)
+		}
+	}
+	if !seen["127.0.0.1:0"] {
+		candidates = append(candidates, "127.0.0.1:0")
+	}
+	return candidates
+}
+
+func listenPort(address string) int {
+	_, portStr, err := net.SplitHostPort(address)
+	if err != nil {
+		return 3240
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port < 1 || port > 65535 {
+		return 3240
+	}
+	return port
 }
 
 func (s *appServer) Restart(count int) error {
@@ -44,32 +77,52 @@ func (s *appServer) Restart(count int) error {
 		s.setErrorLocked(err)
 		return err
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	server := usbip.NewServer(s.address, devices, s.logger)
-	result := make(chan error, 1)
-	go func() { result <- server.Serve(ctx) }()
 
-	select {
-	case <-server.Ready():
-		s.cancel = cancel
-		s.done = result
-		s.count = count
-		s.lastError = ""
-		s.logger.Printf("Virtual Cables %s started with %d cable(s)", version, count)
-		return nil
-	case err := <-result:
-		cancel()
-		if err == nil {
-			err = fmt.Errorf("USB/IP server stopped before becoming ready")
+	candidates := listenCandidates(s.address)
+	var lastErr error
+	for _, addr := range candidates {
+		ctx, cancel := context.WithCancel(context.Background())
+		server := usbip.NewServer(addr, devices, s.logger)
+		result := make(chan error, 1)
+		go func() { result <- server.Serve(ctx) }()
+
+		select {
+		case <-server.Ready():
+			bound := addr
+			if a := server.Addr(); a != nil {
+				bound = a.String()
+			}
+			s.cancel = cancel
+			s.done = result
+			s.count = count
+			s.bound = bound
+			s.lastError = ""
+			if bound != s.address {
+				s.logger.Printf("Configured USB/IP address %s is unavailable; using %s instead", s.address, bound)
+			}
+			s.logger.Printf("Virtual Cables %s started with %d cable(s) on %s", version, count, bound)
+			return nil
+		case err := <-result:
+			cancel()
+			if err == nil {
+				err = fmt.Errorf("USB/IP server stopped before becoming ready")
+			}
+			s.logger.Printf("Could not open USB/IP listener on %s: %v", addr, err)
+			lastErr = err
+			if addr == candidates[0] {
+				s.logger.Print(portConflictHint(addr))
+			}
+		case <-time.After(3 * time.Second):
+			cancel()
+			err := fmt.Errorf("timed out while opening USB/IP port %s", addr)
+			s.setErrorLocked(err)
+			return err
 		}
-		s.setErrorLocked(err)
-		return err
-	case <-time.After(3 * time.Second):
-		cancel()
-		err := fmt.Errorf("timed out while opening USB/IP port %s", s.address)
-		s.setErrorLocked(err)
-		return err
 	}
+
+	err = fmt.Errorf("could not open the USB/IP port (tried %s): %w", strings.Join(candidates, ", "), lastErr)
+	s.setErrorLocked(err)
+	return err
 }
 
 func (s *appServer) Stop() {
@@ -82,6 +135,27 @@ func (s *appServer) LastError() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.lastError
+}
+
+// Address returns the address the USB/IP server is actually bound to.
+func (s *appServer) Address() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.bound != "" {
+		return s.bound
+	}
+	return s.address
+}
+
+// Preferred returns the configured listen address (before any fallback).
+func (s *appServer) Preferred() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.address
+}
+
+func (s *appServer) ListenPort() int {
+	return listenPort(s.Address())
 }
 
 func (s *appServer) LogPath() string {
@@ -120,6 +194,7 @@ func (s *appServer) stopLocked() {
 	}
 	s.cancel = nil
 	s.done = nil
+	s.bound = ""
 }
 
 func main() {
@@ -142,7 +217,7 @@ func main() {
 	logger.Printf("Log file: %s", logPath)
 	logger.Printf("USB/IP protocol: 0x%04X", usbip.ProtocolVersion)
 
-	address := flag.String("listen", "127.0.0.1:3240", "USB/IP listen address")
+	address := flag.String("listen", loadListenAddress(), "USB/IP listen address")
 	cables := flag.Int("cables", loadCableCount(), "number of virtual cable devices (1-32)")
 	latencyMS := flag.Int("buffer-ms", 250, "audio ring-buffer capacity in milliseconds")
 	selfTest := flag.Bool("self-test", false, "validate descriptors and ring buffers, then exit")
@@ -279,7 +354,7 @@ func configFilePath() string {
 	return filepath.Join(applicationDataDir(), "CONFIG.ini")
 }
 
-func loadCableCount() int {
+func configValue(key string) string {
 	paths := []string{configFilePath(), "CONFIG.ini"}
 	for _, path := range paths {
 		b, err := os.ReadFile(path)
@@ -288,23 +363,41 @@ func loadCableCount() int {
 		}
 		for _, line := range strings.Split(string(b), "\n") {
 			parts := strings.SplitN(strings.TrimSpace(line), "=", 2)
-			if len(parts) == 2 && strings.EqualFold(parts[0], "CABLES") {
-				n, parseErr := strconv.Atoi(strings.TrimSpace(parts[1]))
-				if parseErr == nil && n >= 1 && n <= 32 {
-					return n
+			if len(parts) == 2 && strings.EqualFold(parts[0], key) {
+				if value := strings.TrimSpace(parts[1]); value != "" {
+					return value
 				}
 			}
+		}
+	}
+	return ""
+}
+
+func loadListenAddress() string {
+	if addr := configValue("LISTEN"); addr != "" {
+		return addr
+	}
+	return "127.0.0.1:3240"
+}
+
+func loadCableCount() int {
+	if raw := configValue("CABLES"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n >= 1 && n <= 32 {
+			return n
 		}
 	}
 	return 1
 }
 
-func saveCableCount(n int) error {
+func saveCableCount(n int, listen string) error {
+	if strings.TrimSpace(listen) == "" {
+		listen = "127.0.0.1:3240"
+	}
 	dir := applicationDataDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	content := fmt.Sprintf("# Virtual Cables configuration\r\nCABLES=%d\r\nLISTEN=127.0.0.1:3240\r\nBUFFER_MS=250\r\n", n)
+	content := fmt.Sprintf("# Virtual Cables configuration\r\nCABLES=%d\r\nLISTEN=%s\r\nBUFFER_MS=250\r\n", n, listen)
 	return os.WriteFile(configFilePath(), []byte(content), 0o644)
 }
 
