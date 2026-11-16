@@ -55,10 +55,8 @@ func runUSBIP(executable string, logger *log.Logger, arguments ...string) (strin
 	return text, nil
 }
 
-// usbipArgs prefixes the usbip.exe arguments with a custom TCP port when the
-// USB/IP server is not listening on the protocol default (3240). The
-// --tcp-port option is global and must precede the subcommand. It is omitted
-// for the default port so older usbip.exe builds keep working unchanged.
+// usbipArgs puts --tcp-port before the subcommand when the server is off the
+// default port; 3240 is left implicit so older usbip.exe builds still work.
 func usbipArgs(port int, arguments ...string) []string {
 	if port > 0 && port != 3240 {
 		return append([]string{"--tcp-port", strconv.Itoa(port)}, arguments...)

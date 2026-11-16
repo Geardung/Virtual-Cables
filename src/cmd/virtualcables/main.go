@@ -35,9 +35,7 @@ type appServer struct {
 	lastError string
 }
 
-// listenCandidates returns the preferred address followed by fallback
-// addresses to try when the preferred port cannot be bound (for example when
-// another USB/IP stack such as usbipd holds the default port 3240).
+// listenCandidates lists the preferred listen address plus fallback addresses for when it cannot be bound.
 func listenCandidates(preferred string) []string {
 	candidates := []string{preferred}
 	seen := map[string]bool{preferred: true}
@@ -109,9 +107,6 @@ func (s *appServer) Restart(count int) error {
 			}
 			s.logger.Printf("Could not open USB/IP listener on %s: %v", addr, err)
 			lastErr = err
-			if addr == candidates[0] {
-				s.logger.Print(portConflictHint(addr))
-			}
 		case <-time.After(3 * time.Second):
 			cancel()
 			err := fmt.Errorf("timed out while opening USB/IP port %s", addr)

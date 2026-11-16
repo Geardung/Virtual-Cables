@@ -8,8 +8,7 @@ import (
 )
 
 func TestRestartFallsBackWhenPreferredAddressUnavailable(t *testing.T) {
-	// 8.8.8.8 is never bindable locally, so the preferred address always fails
-	// and Restart must fall back to a free 127.0.0.1 port.
+	// 8.8.8.8 is never bindable locally, forcing Restart onto the fallback path.
 	s := &appServer{address: "8.8.8.8:3240", bufferMS: 250, logger: log.New(io.Discard, "", 0)}
 	if err := s.Restart(1); err != nil {
 		t.Fatalf("Restart with unavailable preferred address: %v", err)
